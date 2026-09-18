@@ -1,13 +1,26 @@
 /**
- * 全自動記帳系統 V4.1 (安全性 + 資料完整性修正版)
+ * 全自動記帳系統 V4.2 (安全性 + 效能 + 可維護性修正版)
  *
- * 🆕 V4.1 更新 (架構不變，直接整份貼回 Apps Script 編輯器即可):
+ * 🆕 V4.2 更新 (架構不變，直接整份貼回 Apps Script 編輯器即可):
+ *  1. 🔐 API token 改存 Script Properties → 原始碼可安心公開；CONFIG 內不再放密鑰
+ *  2. 🐛 修正 PROCESSED_MSG_IDS 超過 9KB 上限 → 保留 500 筆會撞到 PropertiesService 單值上限而寫入失敗，改為 300 筆
+ *  3. ⚡ 分類關鍵字預先正規化並快取       → 重新分類數千筆交易不再每筆重算 ~200 個關鍵字
+ *  4. 📖 新增「分類覆寫」工作表           → 在表格裡直接指定「商家包含 X → 分類 Y」，不用改程式碼
+ *  5. 🧪 新增 Node 測試 (test/run.js)     → 純函式 (解析 / 分類 / 統計) 可在本機驗證
+ *  6. 🛡️ doPost 金額驗證                  → 金額為空或 0 直接回覆錯誤，不再寫入空白列
+ *
+ * ⚠️ V4.2 貼回後必做:
+ *  a. Apps Script 編輯器 → 專案設定 → 指令碼屬性 → 新增 API_TOKEN = 你的長隨機字串
+ *     (舊版寫在 CONFIG.API_TOKEN 的值請換新，因為它曾經出現在原始碼中)
+ *  b. (選用) 選單「📖 建立分類覆寫表」→ 在表格裡加規則 → 跑「♻️ 重新分類所有交易」
+ *
+ * ── V4.1 更新紀錄 ──
  *  1. 🔐 doPost 加 token 驗證          → 防止 Web App URL 外洩被亂寫
  *  2. 🔒 LockService                    → 郵件觸發與 iOS 捷徑同時執行不再互踩
  *  3. ♻️ 郵件冪等處理                   → 記錄已處理 msgId，中斷重跑不會重複記帳
  *  4. 🏷️ 解析失敗改標已讀+上標籤        → 不再永遠卡在未讀重掃；標籤「記帳/解析失敗」
  *  5. ✂️ 商家名稱不再被截斷             → regex 改抓整行 (SQ *ALAMO SQUARE CAFE 不會變 SQ)
- *  6. 📚 分類字典大擴充                 → 貼回後跑一次「♻️ 重新分類所有交易」，
+ *  6. 📚 分類字典大擴充                → 貼回後跑一次「♻️ 重新分類所有交易」，
  *                                         未分類可從 25% 壓到 5% 以下 (已實測)
  *  7. 🏪 Pareto 商家正規化              → 統一超商各分店合併計算，集中度不再失真
  *  8. ⚡ 批次寫入 + doPost 預設不重建戰情室 → iOS 捷徑秒回；戰情室改由觸發器/選單刷新
@@ -28,14 +41,22 @@ var CONFIG = {
   WAR_ROOM_SHEET_NAME: "📊 總戰情室",
   EMAIL_QUERY: 'from:cathaybk.com.tw subject:"消費彙整通知" is:unread',
 
-  // 🔐 iOS 捷徑驗證用，改成你自己的隨機字串 (建議 30 字以上)
-  API_TOKEN: "REPLACE_WITH_YOUR_OWN_RANDOM_TOKEN",
+  // 🔐 V4.2: token 改存 Script Properties (鍵名 API_TOKEN)，這裡留空即可。
+  //    只有在 Script Properties 沒設定時才會退回用這個值 (不建議)。
+  API_TOKEN: "",
 
   // 📱 doPost 寫入後是否立即重建戰情室 (false = 秒回，交給觸發器刷新)
   REFRESH_ON_POST: false,
 
   // 🏷️ 解析失敗郵件的標籤
   FAIL_LABEL: "記帳/解析失敗",
+
+  // ♻️ 已處理郵件 ID 保留筆數。PropertiesService 單一值上限 9KB，
+  //    每個 Gmail msgId 約 19 bytes (含 JSON 引號逗號)，300 筆 ≈ 5.7KB 留有餘裕。
+  MAX_PROCESSED_IDS: 300,
+
+  // 📖 V4.2: 分類覆寫工作表 (A 欄=商家關鍵字, B 欄=分類)，比 CATEGORIES 優先
+  OVERRIDE_SHEET_NAME: "📖 分類覆寫",
 
   // 異常偵測閾值 (樣本標準差倍數) 與最少月份數
   ANOMALY_SIGMA: 2,
@@ -95,12 +116,14 @@ function doPost(e) {
       return ContentService.createTextOutput("資料格式解析失敗");
     }
 
-    // 🔐 V4.1: token 驗證
-    if (data.token !== CONFIG.API_TOKEN) {
+    // 🔐 V4.2: token 從 Script Properties 讀取；未設定或不符一律拒絕
+    var expectedToken = getApiToken_();
+    if (!expectedToken || data.token !== expectedToken) {
       return ContentService.createTextOutput("⛔ 未授權");
     }
 
     var date = data.date ? new Date(data.date) : new Date();
+    if (isNaN(date.getTime())) date = new Date();
     var year = date.getFullYear().toString();
 
     var rawAmount = (data.amount || "").toString();
@@ -108,10 +131,12 @@ function doPost(e) {
     var incomeVal = "";
     var cleanAmount = parseFloat(rawAmount.replace(/[^0-9.]/g, ""));
 
-    if (cleanAmount > 0) {
-      if (rawAmount.indexOf("+") > -1) incomeVal = cleanAmount;
-      else expenseVal = cleanAmount;
+    // 🛡️ V4.2: 金額無效就不寫入，避免產生空白列
+    if (!(cleanAmount > 0)) {
+      return ContentService.createTextOutput("⚠️ 金額無效: " + rawAmount);
     }
+    if (rawAmount.indexOf("+") > -1) incomeVal = cleanAmount;
+    else expenseVal = cleanAmount;
 
     var inputType = data.type || "";
     merchant = data.note || data.type || "手動輸入";
@@ -219,14 +244,21 @@ function processThreadsBatch(threads, isTestMode) {
   }
 }
 
-// ♻️ V4.1: 已處理郵件 ID 存於 ScriptProperties (保留最近 500 筆)
+// 🔐 V4.2: token 優先讀 Script Properties，退回 CONFIG (僅相容舊設定)
+function getApiToken_() {
+  var fromProps = PropertiesService.getScriptProperties().getProperty("API_TOKEN");
+  return (fromProps && fromProps.trim()) || CONFIG.API_TOKEN || "";
+}
+
+// ♻️ V4.1: 已處理郵件 ID 存於 ScriptProperties
+//    V4.2: 上限改由 CONFIG.MAX_PROCESSED_IDS 控制，避免超過 9KB 單值上限
 function getProcessedIds_() {
   var raw = PropertiesService.getScriptProperties().getProperty("PROCESSED_MSG_IDS");
   try { return raw ? JSON.parse(raw) : []; } catch (e) { return []; }
 }
 function rememberProcessedId_(ids, id) {
   ids.push(id);
-  while (ids.length > 500) ids.shift();
+  while (ids.length > CONFIG.MAX_PROCESSED_IDS) ids.shift();
 }
 function saveProcessedIds_(ids) {
   PropertiesService.getScriptProperties().setProperty("PROCESSED_MSG_IDS", JSON.stringify(ids));
@@ -648,16 +680,74 @@ function normalizeText(str) {
     .replace(/[`'‘’"“”]/g, '');
 }
 
-function determineCategory(merchantName) {
-  var normalized = normalizeText(merchantName || "").toUpperCase();
+// ⚡ V4.2: 關鍵字只正規化一次 (每次執行快取)，重新分類幾千筆時省下大量重複運算
+var _compiledRules = null;
+function getCompiledRules_() {
+  if (_compiledRules) return _compiledRules;
+  var rules = [];
+
+  // 1) 📖 覆寫表優先 (存在才讀；沒有這張表時行為與 V4.1 完全相同)
+  getOverrideRules_().forEach(function (r) { rules.push(r); });
+
+  // 2) CONFIG.CATEGORIES 依宣告順序，第一個命中的類別勝出
   for (var cat in CONFIG.CATEGORIES) {
     var keywords = CONFIG.CATEGORIES[cat];
     for (var i = 0; i < keywords.length; i++) {
-      var normalizedKeyword = normalizeText(keywords[i]).toUpperCase();
-      if (normalized.indexOf(normalizedKeyword) > -1) return cat;
+      var kw = normalizeText(keywords[i]).toUpperCase();
+      if (kw) rules.push({ keyword: kw, category: cat });
     }
   }
+  _compiledRules = rules;
+  return rules;
+}
+
+// 📖 V4.2: 讀取「分類覆寫」表 (A 欄=商家關鍵字, B 欄=分類，第 1 列為標題)
+function getOverrideRules_() {
+  var rules = [];
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss && ss.getSheetByName(CONFIG.OVERRIDE_SHEET_NAME);
+    if (!sheet || sheet.getLastRow() < 2) return rules;
+    var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
+    values.forEach(function (row) {
+      var kw = normalizeText((row[0] || "").toString().trim()).toUpperCase();
+      var cat = (row[1] || "").toString().trim();
+      if (kw && cat) rules.push({ keyword: kw, category: cat });
+    });
+  } catch (e) {
+    // doPost / 觸發器情境下若無法讀表，安靜退回關鍵字規則
+  }
+  return rules;
+}
+
+function determineCategory(merchantName) {
+  var normalized = normalizeText(merchantName || "").toUpperCase();
+  if (!normalized) return CONFIG.DEFAULT_CATEGORY;
+  var rules = getCompiledRules_();
+  for (var i = 0; i < rules.length; i++) {
+    if (normalized.indexOf(rules[i].keyword) > -1) return rules[i].category;
+  }
   return CONFIG.DEFAULT_CATEGORY;
+}
+
+// 📖 V4.2: 建立覆寫表 (已存在就只切換過去)
+function createOverrideSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(CONFIG.OVERRIDE_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.OVERRIDE_SHEET_NAME);
+    sheet.getRange(1, 1, 1, 3).setValues([["商家關鍵字 (包含即命中)", "分類", "備註"]])
+      .setBackground("#f3f3f3").setFontWeight("bold");
+    sheet.getRange(2, 1, 1, 3).setValues([["範例: 某某牙醫", "🏥 醫療保健", "刪掉這列後開始填自己的規則"]])
+      .setFontColor("#888888").setFontStyle("italic");
+    sheet.setFrozenRows(1);
+    var cats = Object.keys(CONFIG.CATEGORIES).concat([CONFIG.DEFAULT_CATEGORY]);
+    var rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(cats, true).setAllowInvalid(false).build();
+    sheet.getRange(2, 2, 500, 1).setDataValidation(rule);
+    sheet.autoResizeColumns(1, 3);
+  }
+  ss.setActiveSheet(sheet);
 }
 
 // 🏪 V4.1: 連鎖商家正規化 (只給 Pareto 聚合用，不動原始資料)
@@ -799,7 +889,7 @@ function analyzeUnclassified() {
     diag.getRange(row, 1).setValue("🏆 未分類商家排行榜 (Top 30)")
       .setFontWeight("bold").setFontColor("#666666");
     row++;
-    diag.getRange(row, 1).setValue("👉 把這裡的高頻商家加進 CONFIG.CATEGORIES 對應分類,可大幅降低未分類比例")
+    diag.getRange(row, 1).setValue("👉 把這裡的高頻商家加進「📖 分類覆寫」表或 CONFIG.CATEGORIES,再跑「♻️ 重新分類」即可大幅降低未分類比例")
       .setFontStyle("italic").setFontColor("#888888");
     row++;
 
@@ -850,7 +940,7 @@ function analyzeUnclassified() {
     "✅ 診斷完成!\n\n" +
     "全期間未分類占比:" + grandPct.toFixed(1) + "%\n" +
     "未分類商家數:" + sorted.length + "\n\n" +
-    "請查看「🔍 待分類診斷」工作表,把高頻商家加進 CONFIG.CATEGORIES。"
+    "請查看「🔍 待分類診斷」工作表,把高頻商家加進「📖 分類覆寫」表或 CONFIG.CATEGORIES。"
   );
 }
 
@@ -965,6 +1055,7 @@ function onOpen() {
     .addItem('🔄 刷新總戰情室', 'updateUnifiedWarRoom')
     .addSeparator()
     .addItem('🔍 Tail Spend 診斷', 'analyzeUnclassified')
+    .addItem('📖 建立分類覆寫表', 'createOverrideSheet')
     .addItem('♻️ 重新分類所有交易', 'reclassifyAllRows')
     .addToUi();
 }
