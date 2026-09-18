@@ -1,0 +1,5 @@
+# 只推這兩個檔案到 Apps Script；test/、README、package.json 都不能上去
+# (test/run.js 有 require()，若被推上去會讓整個專案每次執行都炸)
+**/**
+!Code.gs
+!appsscript.json

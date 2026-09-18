@@ -1,0 +1,4 @@
+# clasp 憑證與專案綁定 (含 script ID)，各自本機 / CI secret 產生
+.clasprc.json
+.clasp.json
+node_modules/

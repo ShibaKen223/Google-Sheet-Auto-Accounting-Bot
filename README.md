@@ -211,6 +211,32 @@ For anyone reading this as part of an application:
 
 ---
 
+## 🔁 Deploy Workflow (clasp + GitHub Actions)
+
+The Apps Script project is managed with [clasp](https://github.com/google/clasp), so nothing is ever copy-pasted into the online editor.
+
+```text
+edit Code.gs  →  node test/run.js  →  git push origin main
+                                            │
+                          GitHub Actions (.github/workflows/deploy.yml)
+                          runs the tests again, then `clasp push -f`
+                                            ▼
+                                   live Apps Script project
+```
+
+Local one-off deploys also work with `clasp push` from the repo root. Only `Code.gs` and `appsscript.json` are pushed; `.claspignore` keeps the test harness and docs out of the script project.
+
+**CI setup (once):** add two repository secrets in GitHub → Settings → Secrets and variables → Actions:
+
+| Secret | Value |
+|---|---|
+| `SCRIPT_ID` | the script ID from Apps Script → Project Settings |
+| `CLASPRC_JSON` | the full contents of your local `~/.clasprc.json` after `clasp login` |
+
+`.clasp.json` and `.clasprc.json` are git-ignored on purpose. The webhook token lives in Script Properties, so redeploying code never touches it.
+
+---
+
 ## 📜 Version History
 
 | Version | Highlights |
