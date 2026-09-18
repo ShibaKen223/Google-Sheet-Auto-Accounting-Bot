@@ -1,0 +1,10 @@
+{
+  "name": "google-sheet-auto-accounting-bot",
+  "version": "4.2.0",
+  "private": true,
+  "description": "全自動記帳系統：Gmail 抓信 + Google Sheet 戰情室分析 (Google Apps Script)",
+  "scripts": {
+    "test": "node test/run.js"
+  },
+  "license": "MIT"
+}

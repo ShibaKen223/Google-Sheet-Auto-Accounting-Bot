@@ -4,6 +4,8 @@
 ![Status](https://img.shields.io/badge/status-live-success)
 ![Stack](https://img.shields.io/badge/built_with-Google_Apps_Script-blue)
 ![Result](https://img.shields.io/badge/unclassified_spend-37%25→7.2%25-brightgreen)
+![Version](https://img.shields.io/badge/version-4.2-informational)
+![Tests](https://img.shields.io/badge/tests-16_passing-success)
 
 A personal expense tracker built in **Google Apps Script**, designed around corporate procurement analytics concepts. Auto-classifies transactions from credit-card emails, detects spend anomalies, analyzes vendor concentration (Pareto), and tracks MoM / YoY trends — all rendered into a single Google Sheets dashboard.
 
@@ -44,7 +46,7 @@ Parses Gmail for credit-card consolidated statements, extracts each transaction 
 ### 2. Spend Variance Alert
 For each category-month, calculates μ + 2σ from that category's own historical pattern. Months exceeding the threshold are auto-highlighted in red. Statistically, this flags the top ~2.5% most extreme months — the ones a procurement reviewer would want to investigate.
 
-Skips detection when fewer than 3 data points exist (avoids small-sample false positives).
+Uses the sample standard deviation (n−1) and only activates once a category has at least 6 months of data (avoids small-sample false positives).
 
 ### 3. Pareto / Vendor Concentration
 Computes what percentage of total spend the **top 20% of merchants** account for. In healthy procurement, this number tends toward 80% (classic Pareto). Lists the top 5 merchants with cumulative spend.
@@ -61,6 +63,15 @@ A dedicated tool that scans all unclassified transactions, ranks them by cumulat
 
 ### 6. Historical Re-classification
 When the taxonomy is updated, a one-click tool re-runs classification across all historical rows. Includes dry-run preview + confirmation dialog before any data is overwritten. The corporate-procurement equivalent is **Spend Cube re-mapping** after a category-taxonomy revision.
+
+### 7. No-Code Taxonomy Overrides (V4.2)
+A `📖 分類覆寫` sheet lets you add `merchant keyword → category` rules directly in the spreadsheet. Override rules are checked before the code-level keyword dictionary, so the Tail Spend Diagnostic → fix → re-classify loop no longer requires touching the script. The sheet is optional; when absent, behavior is identical to V4.1.
+
+### 8. Ingestion Hardening (V4.1 – V4.2)
+- **Idempotent email processing** — processed Gmail message IDs are remembered (ring buffer sized to stay under the Properties Service 9 KB value limit), so an interrupted run never double-books.
+- **Concurrency lock** — the Gmail trigger, the iOS webhook and the re-classification tool serialize through `LockService`.
+- **Secret hygiene** — the webhook token lives in Script Properties, not in source, so the code can be published as-is.
+- **Failed parses are labeled** (`記帳/解析失敗`) instead of staying unread forever and being re-scanned on every run.
 
 ---
 
@@ -143,7 +154,8 @@ No external dependencies. No paid APIs. The entire system runs inside the user's
 This is a personal project, not a production system. A few things were intentionally **not** built:
 
 - **No LLM-based classification.** Considered but rejected — the data is structured and the keyword approach is faster, cheaper, and more interpretable for this scale (a few thousand transactions/year). For larger taxonomies (10k+ unique merchants), LLM fallback for keyword-miss cases would make sense.
-- **No deduplication.** Reprocessing the same email twice would create duplicate rows. Not an issue with the current "unread-only" filter, but a real production system would need transaction-hash idempotency.
+- **Deduplication is email-level, not transaction-level.** A processed Gmail message is never re-imported, but two different emails listing the same transaction, or an iOS Shortcut tapped twice, will still create duplicate rows. A production system would hash (date, amount, merchant) and reject repeats.
+- **Email ingestion depends on the "unread" state.** If you open a statement email on your phone before the trigger runs, it is skipped. A label-based query (`-label:記帳/已處理`) would be more robust; it was not adopted to avoid re-importing history already booked by older versions.
 - **No budget vs actual.** Skipped because it requires manual budget input and the case-study value of the existing analytics features was already strong without it.
 - **Anomaly detection ignores seasonality.** μ + 2σ uses the full year's history, which means December (or other seasonally-high months) can produce false positives. A production system would compare against same-month-prior-year (a YoY-anchored anomaly detector).
 
@@ -151,29 +163,40 @@ This is a personal project, not a production system. A few things were intention
 
 ## 📷 Screenshots
 
-> Screenshots use **anonymized mock data** to protect personal financial information.
-
-| | |
-|---|---|
-| ![Dashboard](docs/screenshots/01_dashboard.png) | ![Pareto](docs/screenshots/02_pareto.png) |
-| **War Room dashboard** with anomaly highlighting and trend rows | **Pareto / vendor concentration** view |
-| ![Diagnostic](docs/screenshots/03_diagnostic.png) | ![Reduction](docs/screenshots/04_reduction.png) |
-| **Tail Spend Diagnostic** with Top-30 merchant ranking | **Before / after** of the 37% → 7.2% reduction |
+> Screenshots with **anonymized mock data** are planned for `docs/screenshots/`. Until then, the fastest way to see the dashboard is to follow *Getting Started* on a copy of your own sheet.
 
 ---
 
 ## 🚀 Getting Started
 
 1. Create a new Google Sheet.
-2. **Extensions → Apps Script** → paste `expense_tracker_v4.gs`.
-3. Save and reload the sheet.
-4. Use the **💰 記帳小幫手** (Expense Helper) menu:
+2. **Extensions → Apps Script** → paste the contents of [`Code.gs`](Code.gs).
+3. **Project Settings → Script Properties** → add `API_TOKEN` = a long random string (30+ chars). This is what the iOS Shortcut must send as `"token"` in its JSON body. Never put it in the code.
+4. Save and reload the sheet.
+5. Use the **💰 記帳小幫手** (Expense Helper) menu:
    - `📩 立即抓信` — Pull credit-card emails now
    - `🔄 刷新總戰情室` — Refresh the dashboard
    - `🔍 Tail Spend 診斷` — Run unclassified-spend diagnostic
+   - `📖 建立分類覆寫表` — Create the override sheet for no-code taxonomy rules
    - `♻️ 重新分類所有交易` — Re-classify historical rows after taxonomy update
 
-Optional: configure a **time-driven trigger** in the Apps Script editor to run `processConsolidatedEmails()` daily for fully unattended operation.
+Recommended triggers (Apps Script editor → Triggers):
+- `processConsolidatedEmails` — time-driven, every hour or daily
+- `updateUnifiedWarRoom` — time-driven, hourly (the iOS webhook writes rows but does not rebuild the dashboard, so the Shortcut returns instantly)
+
+**Upgrading from V4.1:** move your token from `CONFIG.API_TOKEN` into Script Properties and rotate it, since the old value lived in source. Everything else is drop-in.
+
+---
+
+## 🧪 Tests
+
+The pure logic (email parser, normalizer, classifier + override rules, merchant aliasing, spend matrix / MoM / YoY / Pareto / anomaly math) runs locally under Node with stubbed Apps Script services. No dependencies.
+
+```bash
+node test/run.js
+```
+
+Functions that need live Sheets or Gmail (`doPost`, email fetching, dashboard rendering) are intentionally out of scope for the harness.
 
 ---
 
@@ -185,6 +208,16 @@ For anyone reading this as part of an application:
 - **Iterative quantitative improvement** — the 37% → 7.2% case study isn't a "look I built something" story; it's a "look how I diagnosed and fixed it" story.
 - **Trade-off literacy** — the *Limitations* section is intentional. Knowing what *not* to build is as important as knowing what to build.
 - **End-to-end ownership** — ingestion (Gmail/Shortcuts), processing (classifier, normalizer), analytics (variance, Pareto, trends), presentation (formatted dashboard), and governance (re-classification tool) — all built and integrated.
+
+---
+
+## 📜 Version History
+
+| Version | Highlights |
+|---|---|
+| **4.2** | Token moved to Script Properties; fixed processed-ID buffer exceeding the 9 KB Properties limit; cached keyword compilation; `📖 分類覆寫` override sheet; webhook amount validation; Node test harness |
+| 4.1 | Webhook token auth; `LockService`; idempotent email processing; failed-parse labeling; full-line merchant capture; expanded dictionary; Pareto merchant aliasing; batch writes; sample-std-dev anomaly detection; annual income/expense block |
+| 4.0 | Unified War Room dashboard, Tail Spend diagnostic, re-classification tool |
 
 ---
 
