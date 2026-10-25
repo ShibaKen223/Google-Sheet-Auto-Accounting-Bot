@@ -1,7 +1,18 @@
 /**
- * 全自動記帳系統 V4.2 (安全性 + 效能 + 可維護性修正版)
+ * 全自動記帳系統 V4.3 (未分類大掃除)
  *
- * 🆕 V4.2 更新 (架構不變，直接整份貼回 Apps Script 編輯器即可):
+ * 🆕 V4.3 更新:
+ *  1. 🏷️ 分類改成兩層比對            → 先比品牌/商家關鍵字 (CATEGORIES)，都沒中才比國泰類別標籤與支付平台 (FALLBACK_CATEGORIES)
+ *     新版郵件是「商家 + 國泰類別」格式，品牌優先才不會被標籤搶走:
+ *     「ANTHROPIC* CLAUDE SUB 家電∕３Ｃ通訊」→ 數位娛樂 (原本被「家電」歸到生活購物)
+ *     「誠品生活捷運敦化店」→ 教育學習、「札幌藥龍山寺捷運店」→ 醫療保健 (原本被「捷運」搶走)
+ *     「全支付 交通∕運輸」→ 交通出行；單純「全支付」/「連加」(LINE Pay) → 提款轉帳
+ *  2. 🔤 關鍵字可以寫 RegExp           → NET、MOS 這種太短的品牌只比開頭，不會誤中 NETFLIX
+ *  3. 📚 字典補上 2023–2026 未分類清單的商家 (英文連鎖店名、日韓旅遊、國泰類別標籤…)
+ *  4. 🛡️ 重新分類時規則判斷不出來 → 保留原分類，表格裡手動改過的分類不會被洗回「其他支出」
+ *  5. 🚇 CLIPPER (舊金山交通卡) 從數位娛樂改到交通出行
+ *
+ * ── V4.2 更新紀錄 (架構不變，直接整份貼回 Apps Script 編輯器即可) ──
  *  1. 🔐 API token 改存 Script Properties → 原始碼可安心公開；CONFIG 內不再放密鑰
  *  2. 🐛 修正 PROCESSED_MSG_IDS 超過 9KB 上限 → 保留 500 筆會撞到 PropertiesService 單值上限而寫入失敗，改為 300 筆
  *  3. ⚡ 分類關鍵字預先正規化並快取       → 重新分類數千筆交易不再每筆重算 ~200 個關鍵字
@@ -67,19 +78,39 @@ var CONFIG = {
   PARETO_TOP_N: 5,
 
   // keyword 比對前會先「全形→半形 + 移除引號 + toUpperCase」正規化
+  // 字串 = 包含即命中；RegExp = 對正規化後的大寫字串做 test (給 NET、MOS 這種太短、只能比開頭的品牌)
   CATEGORIES: {
-    "🍔 餐飲美食": ["餐飲", "星巴克", "麥當勞", "路易莎", "餐廳", "FOOD", "咖啡", "食品", "小吃", "早餐", "午餐", "晚餐", "雞肉飯", "BAKERY", "統一超商", "7-ELEVEN", "全家", "FamilyMart", "全聯", "超市", "量販", "家樂福", "美廉社", "OP錢包", "日常支出", "SAFEWAY", "OK超商", "涮乃葉", "藏壽司", "六本木", "台鋼漢堡王", "漢堡", "食堂", "鍋物", "壽司", "燒肉", "拉麵", "CAFE", "摩斯", "鬍鬚張", "麥味登"],
-    "🛍️ 生活購物": ["一般購物", "蝦皮", "MOMO", "PCHOME", "百貨", "UNIQLO", "IKEA", "服飾", "休閒用品", "GlobalMall", "家電", "TAOBAO", "Newbalance", "燦坤", "陳守", "全國電子", "原價屋", "ZARA", "ABC-MART", "迪卡儂", "DECATHLON", "寶雅", "剪頭髮", "美髮", "美容"],
-    "⛽ 交通出行": ["交通", "運輸", "臺灣鐵路", "臺鐵", "高鐵", "捷運", "悠遊卡", "中油", "台塑", "加油", "停車", "UBER", "TAXI", "微笑單車", "監理所", "車麗屋", "台灣大車隊"],
-    "✈️ 旅遊出行": ["HOTEL", "飯店", "住宿", "旅行社", "Booking", "BKG", "STARLUX", "星宇", "華航", "長榮航", "TWAY", "Airbnb", "Agoda", "民宿", "LONDON", "KLOOK", "Golden Gate", "旅遊", "賓館", "ESTA", "LAWSON", "JOOSIK", "EXIMBAY", "HITOMEBORE", "MAMESHIBA", "BITSUKUKAMERA"],
-    "📺 數位娛樂": ["NETFLIX", "SPOTIFY", "YOUTUBE", "APPLE", "GOOGLE", "STEAM", "CLIPPER", "娛樂", "威秀", "影城", "CLAUDE.AI", "ANTHROPIC", "OPENAI"],
-    "🏥 醫療保健": ["醫院", "診所", "藥局", "屈臣氏", "康是美", "醫療救護"],
+    "🍔 餐飲美食": ["星巴克", "麥當勞", "路易莎", "餐廳", "FOOD", "咖啡", "食品", "小吃", "早餐", "午餐", "晚餐", "雞肉飯", "BAKERY", "統一超商", "7-ELEVEN", "全家", "FamilyMart", "全聯", "家樂福", "美廉社", "OP錢包", "日常支出", "SAFEWAY", "OK超商", "涮乃葉", "藏壽司", "六本木", "台鋼漢堡王", "漢堡", "食堂", "鍋物", "壽司", "燒肉", "拉麵", "CAFE", "摩斯", "鬍鬚張", "麥味登",
+      "美食", "義美", "爭鮮", "海底撈", "火鍋", "滷味", "雞排", "水餃", "河粉", "自助餐", "便當", "麵", "肉羹", "蘿蔔糕", "茶道", "台鐵商場", "大港倉", "EZ訂",
+      "SEVEN-ELEVEN", "GS25", "SSIYU", "STARBUCKS", "MCDONALD", "SUBWAY", "WENDY", "IN-N-OUT", "BURGER", "DONUT", "KRISPY", "SUSHI", "COMEBUY", "VENDING", "TST*", /^MOS(?![A-Z])/],
+    "🛍️ 生活購物": ["蝦皮", "MOMO", "PCHOME", "百貨", "UNIQLO", "IKEA", "GlobalMall", "TAOBAO", "Newbalance", "燦坤", "陳守", "全國電子", "原價屋", "ZARA", "ABC-MART", "迪卡儂", "DECATHLON", "寶雅", "剪頭髮", "美髮", "美容",
+      "LALAPORT", "特馬有限公司", /^NET(?![A-Z])/],
+    "⛽ 交通出行": ["臺灣鐵路", "臺鐵", "台鐵局", "高鐵", "大眾捷運", "台北捷運", "臺北捷運", "桃園捷運", "台中捷運", "臺中捷運", "高雄捷運", "捷運公司", "悠遊卡", "中油", "台塑", "加油", "停車", "城市車旅", "UBER", "TAXI", "微笑單車", "監理所", "車麗屋", "台灣大車隊", "冠華企業",
+      "CLIPPER", "SFMTA", "LIME*RIDE"],
+    "✈️ 旅遊出行": ["HOTEL", "飯店", "住宿", "旅行社", "Booking", "BKG", "STARLUX", "星宇", "華航", "長榮航", "TWAY", "Airbnb", "Agoda", "民宿", "LONDON", "KLOOK", "Golden Gate", "旅遊", "賓館", "ESTA", "LAWSON", "JOOSIK", "(JOO)", "EXIMBAY", "HITOMEBORE", "MAMESHIBA", "BITSUKUKAMERA", "KOREAHERITAGE"],
+    "📺 數位娛樂": ["NETFLIX", "SPOTIFY", "YOUTUBE", "APPLE", "GOOGLE", "STEAM", "CAPCUT", "娛樂", "威秀", "影城", "CLAUDE.AI", "ANTHROPIC", "OPENAI"],
+    "🏥 醫療保健": ["醫院", "診所", "藥局", "屈臣氏", "康是美", "醫療救護", "札幌藥", "杏一", "眼鏡", "COCOKARA"],
     "🛡️ 保險": ["保險", "富邦產物", "國泰人壽", "新光人壽", "國壽保費", "旅平險"],
-    "🎓 教育學習": ["學費", "註冊費", "教育", "學雜費", "TUITION", "臺灣銀行", "台灣銀行", "書局", "誠品", "金石堂", "電腦技能基金會", "Kobo", "博客來", "LEADERSHIP"],
-    "🏦 提款轉帳": ["提款", "轉帳", "CASH", "全支付"],
+    "🎓 教育學習": ["學費", "註冊費", "教育", "學雜費", "TUITION", "臺灣銀行", "台灣銀行", "書局", "誠品", "金石堂", "墊腳石", "九乘九", "文具", "電腦技能基金會", "Kobo", "博客來", "LEADERSHIP"],
+    "🏦 提款轉帳": ["提款", "轉帳", "CASH"],
     "🏠 房屋雜費": ["房租", "水費", "電費", "瓦斯", "管理費", "中華電信", "家具家飾", "開鎖", "輕鬆繳"],
     "🪙 投資支出": ["定期定額", "Alchemy", "alchemypay", "AlchemyPay", "MAX交易所", "BitoPro", "幣安", "Binance", "加密"],
     "💰 個人收入": ["生活費", "獎助學金", "薪水", "薪資", "零用金", "家教", "收入"]
+  },
+
+  // 🏷️ V4.3: 第二層 — CATEGORIES 全部沒命中才比對
+  //    國泰類別標籤 (新版郵件附在商家後面，例如「XX店 超市∕量販」；舊版則只有標籤) 與支付平台。
+  //    標籤只代表「刷卡機登記的類別」，所以排在品牌之後；支付平台放最後，
+  //    「全支付 交通∕運輸」會先吃到交通標籤，只有單純「全支付」才歸提款轉帳。
+  //    休閒露營 / 線上付款 是推估: 前者多為運動或休閒場館，後者多為訂閱與數位內容。
+  FALLBACK_CATEGORIES: {
+    "🍔 餐飲美食": ["餐飲", "超市", "量販"],
+    "🛍️ 生活購物": ["一般購物", "服飾", "休閒用品", "家電", "PAYPAL"],
+    "⛽ 交通出行": ["交通", "運輸", "捷運"],
+    "📺 數位娛樂": ["劇場", "戲院", "休閒露營", "線上付款"],
+    "🎓 教育學習": ["書店"],
+    "🏠 房屋雜費": ["電信"],
+    "🏦 提款轉帳": ["全支付", "全盈支付", "連加", "LINE PAY", "LINEPAY", "街口"]
   },
   DEFAULT_CATEGORY: "其他支出",
 
@@ -690,13 +721,20 @@ function getCompiledRules_() {
   getOverrideRules_().forEach(function (r) { rules.push(r); });
 
   // 2) CONFIG.CATEGORIES 依宣告順序，第一個命中的類別勝出
-  for (var cat in CONFIG.CATEGORIES) {
-    var keywords = CONFIG.CATEGORIES[cat];
-    for (var i = 0; i < keywords.length; i++) {
-      var kw = normalizeText(keywords[i]).toUpperCase();
-      if (kw) rules.push({ keyword: kw, category: cat });
+  // 3) 🏷️ V4.3: CONFIG.FALLBACK_CATEGORIES (國泰類別標籤 / 支付平台) 排在最後
+  [CONFIG.CATEGORIES, CONFIG.FALLBACK_CATEGORIES].forEach(function (dict) {
+    for (var cat in dict) {
+      var keywords = dict[cat];
+      for (var i = 0; i < keywords.length; i++) {
+        if (keywords[i] instanceof RegExp) {
+          rules.push({ regex: keywords[i], category: cat });
+          continue;
+        }
+        var kw = normalizeText(keywords[i]).toUpperCase();
+        if (kw) rules.push({ keyword: kw, category: cat });
+      }
     }
-  }
+  });
   _compiledRules = rules;
   return rules;
 }
@@ -725,9 +763,17 @@ function determineCategory(merchantName) {
   if (!normalized) return CONFIG.DEFAULT_CATEGORY;
   var rules = getCompiledRules_();
   for (var i = 0; i < rules.length; i++) {
-    if (normalized.indexOf(rules[i].keyword) > -1) return rules[i].category;
+    var r = rules[i];
+    if (r.regex ? r.regex.test(normalized) : normalized.indexOf(r.keyword) > -1) return r.category;
   }
   return CONFIG.DEFAULT_CATEGORY;
+}
+
+// 🛡️ V4.3: 重新分類用 — 規則判斷不出來 (回傳預設分類) 時保留原分類，
+//    在表格裡手動改過的分類才不會被洗回「其他支出」
+function reclassifiedCategory_(merchant, oldCat) {
+  var newCat = determineCategory(merchant);
+  return newCat === CONFIG.DEFAULT_CATEGORY ? oldCat : newCat;
 }
 
 // 📖 V4.2: 建立覆寫表 (已存在就只切換過去)
@@ -975,7 +1021,7 @@ function reclassifyAllRows() {
     data.forEach(function (row) {
       var merchant = (row[3] || "").toString();
       var oldCat = row[4] || CONFIG.DEFAULT_CATEGORY;
-      var newCat = determineCategory(merchant);
+      var newCat = reclassifiedCategory_(merchant, oldCat);
       totalRows++;
       if (oldCat !== newCat) {
         changedCount++;
@@ -1000,7 +1046,7 @@ function reclassifyAllRows() {
     "  ├─ 從「其他」轉具體分類:" + fromOtherCount + " 筆\n" +
     "  └─ 具體分類之間調整:" + betweenCatsCount + " 筆\n\n" +
     "前 5 筆變動範例:\n" + sampleChanges.join("\n") + "\n\n" +
-    "⚠️ 此操作會直接覆寫各年度工作表的「分類」欄。建議先在副本測試。\n\n是否繼續?";
+    "⚠️ 此操作會直接覆寫各年度工作表的「分類」欄 (規則判斷不出來的列保留原分類)。建議先在副本測試。\n\n是否繼續?";
 
   var response = ui.alert("確認重新分類", confirmMsg, ui.ButtonSet.YES_NO);
   if (response !== ui.Button.YES) {
@@ -1023,7 +1069,7 @@ function reclassifyAllRows() {
       data.forEach(function (row) {
         var merchant = (row[3] || "").toString();
         var oldCat = row[4] || CONFIG.DEFAULT_CATEGORY;
-        var newCat = determineCategory(merchant);
+        var newCat = reclassifiedCategory_(merchant, oldCat);
         if (oldCat !== newCat) {
           row[4] = newCat;
           actualChanged++;

@@ -4,8 +4,8 @@
 ![Status](https://img.shields.io/badge/status-live-success)
 ![Stack](https://img.shields.io/badge/built_with-Google_Apps_Script-blue)
 ![Result](https://img.shields.io/badge/unclassified_spend-37%25→7.2%25-brightgreen)
-![Version](https://img.shields.io/badge/version-4.2-informational)
-![Tests](https://img.shields.io/badge/tests-16_passing-success)
+![Version](https://img.shields.io/badge/version-4.3-informational)
+![Tests](https://img.shields.io/badge/tests-21_passing-success)
 
 A personal expense tracker built in **Google Apps Script**, designed around corporate procurement analytics concepts. Auto-classifies transactions from credit-card emails, detects spend anomalies, analyzes vendor concentration (Pareto), and tracks MoM / YoY trends — all rendered into a single Google Sheets dashboard.
 
@@ -43,6 +43,8 @@ The technical infrastructure is identical — transactions in, structured analyt
 ### 1. Auto-Classification Engine
 Parses Gmail for credit-card consolidated statements, extracts each transaction (date, amount, merchant), and assigns it to one of 13 categories using a keyword dictionary. Includes full-width-to-half-width normalization and quote/apostrophe stripping to handle real-world merchant name inconsistencies (e.g., `ＩＫＥＡ` → `IKEA`, `T\`WAY` → `TWAY`).
 
+Matching runs in two tiers (V4.3): merchant/brand keywords first, then the bank's own category label (newer statements append it, e.g. `統康生活超市 超市∕量販`) and payment wallets as a fallback. Brands therefore win over generic labels — `ANTHROPIC* CLAUDE SUB 家電∕３Ｃ通訊` lands in Digital Entertainment, not Shopping. Keywords may also be `RegExp`s for short brands that must match at the start (`/^NET(?![A-Z])/` hits the NET clothing chain but not NETFLIX).
+
 ### 2. Spend Variance Alert
 For each category-month, calculates μ + 2σ from that category's own historical pattern. Months exceeding the threshold are auto-highlighted in red. Statistically, this flags the top ~2.5% most extreme months — the ones a procurement reviewer would want to investigate.
 
@@ -62,7 +64,7 @@ Together they let you distinguish "December is high because December is always h
 A dedicated tool that scans all unclassified transactions, ranks them by cumulative spend, and overlays a Pareto 80%-cumulative line. Tells you exactly which merchants to add to the keyword dictionary to maximize coverage gain per keyword added.
 
 ### 6. Historical Re-classification
-When the taxonomy is updated, a one-click tool re-runs classification across all historical rows. Includes dry-run preview + confirmation dialog before any data is overwritten. The corporate-procurement equivalent is **Spend Cube re-mapping** after a category-taxonomy revision.
+When the taxonomy is updated, a one-click tool re-runs classification across all historical rows. Includes dry-run preview + confirmation dialog before any data is overwritten. Rows the rules cannot classify keep their current category (V4.3), so manual fixes made in the sheet survive a re-run. The corporate-procurement equivalent is **Spend Cube re-mapping** after a category-taxonomy revision.
 
 ### 7. No-Code Taxonomy Overrides (V4.2)
 A `📖 分類覆寫` sheet lets you add `merchant keyword → category` rules directly in the spreadsheet. Override rules are checked before the code-level keyword dictionary, so the Tail Spend Diagnostic → fix → re-classify loop no longer requires touching the script. The sheet is optional; when absent, behavior is identical to V4.1.
@@ -241,7 +243,8 @@ Local one-off deploys also work with `clasp push` from the repo root. Only `Code
 
 | Version | Highlights |
 |---|---|
-| **4.2** | Token moved to Script Properties; fixed processed-ID buffer exceeding the 9 KB Properties limit; cached keyword compilation; `📖 分類覆寫` override sheet; webhook amount validation; Node test harness |
+| **4.3** | Two-tier classifier (brand keywords → bank category labels / wallets); RegExp keywords; dictionary expanded from the 2023–2026 tail-spend list; re-classification keeps manual categories; CLIPPER moved to Transport |
+| 4.2 | Token moved to Script Properties; fixed processed-ID buffer exceeding the 9 KB Properties limit; cached keyword compilation; `📖 分類覆寫` override sheet; webhook amount validation; Node test harness |
 | 4.1 | Webhook token auth; `LockService`; idempotent email processing; failed-parse labeling; full-line merchant capture; expanded dictionary; Pareto merchant aliasing; batch writes; sample-std-dev anomaly detection; annual income/expense block |
 | 4.0 | Unified War Room dashboard, Tail Spend diagnostic, re-classification tool |
 

@@ -133,6 +133,46 @@ test("override sheet takes precedence over CONFIG keywords", function () {
   resetRuleCache();
   assert.strictEqual(sandbox.determineCategory("SQ *ALAMO SQUARE CAFE"), "🍔 餐飲美食");
 });
+test("brand keywords beat Cathay category labels (two-tier match)", function () {
+  resetRuleCache();
+  assert.strictEqual(sandbox.determineCategory("ANTHROPIC* CLAUDE SUB 家電∕３Ｃ通訊"), "📺 數位娛樂");
+  assert.strictEqual(sandbox.determineCategory("誠品生活捷運敦化店（書店一般"), "🎓 教育學習");
+  assert.strictEqual(sandbox.determineCategory("札幌藥龍山寺捷運店"), "🏥 醫療保健");
+  assert.strictEqual(sandbox.determineCategory("臺北大眾捷運股份有限公司 交通∕運輸"), "⛽ 交通出行");
+  assert.strictEqual(sandbox.determineCategory("統康生活超市板橋四維店 超市∕量販"), "🍔 餐飲美食");
+});
+test("label-only rows and payment wallets fall back correctly", function () {
+  resetRuleCache();
+  assert.strictEqual(sandbox.determineCategory("交通／運輸"), "⛽ 交通出行");
+  assert.strictEqual(sandbox.determineCategory("一般購物 註一"), "🛍️ 生活購物");
+  assert.strictEqual(sandbox.determineCategory("休閒露營 註一"), "📺 數位娛樂");
+  assert.strictEqual(sandbox.determineCategory("全支付 交通∕運輸"), "⛽ 交通出行", "label beats wallet");
+  assert.strictEqual(sandbox.determineCategory("全支付"), "🏦 提款轉帳");
+  assert.strictEqual(sandbox.determineCategory("連加"), "🏦 提款轉帳");
+});
+test("RegExp keywords only match short brands at the start", function () {
+  resetRuleCache();
+  assert.strictEqual(sandbox.determineCategory("ＮＥＴ三重四店"), "🛍️ 生活購物");
+  assert.strictEqual(sandbox.determineCategory("NETFLIX.COM"), "📺 數位娛樂");
+  assert.strictEqual(sandbox.determineCategory("ＭＯＳ－長興店（櫃台）"), "🍔 餐飲美食");
+  assert.strictEqual(sandbox.determineCategory("COSMOS MOSCOW"), sandbox.CONFIG.DEFAULT_CATEGORY);
+});
+test("English chain names and transit cards from the tail-spend list", function () {
+  resetRuleCache();
+  assert.strictEqual(sandbox.determineCategory("SEVEN-ELEVEN"), "🍔 餐飲美食");
+  assert.strictEqual(sandbox.determineCategory("STARBUCKS STORE 54768"), "🍔 餐飲美食");
+  assert.strictEqual(sandbox.determineCategory("TST* SUPER DUPER - METREO"), "🍔 餐飲美食");
+  assert.strictEqual(sandbox.determineCategory("CLIPPER SYSTEMS MOBILE #1"), "⛽ 交通出行");
+  assert.strictEqual(sandbox.determineCategory("台鐵局－彰化站"), "⛽ 交通出行");
+});
+test("re-classification keeps a manual category when rules find nothing", function () {
+  resetRuleCache();
+  var other = sandbox.CONFIG.DEFAULT_CATEGORY;
+  assert.strictEqual(sandbox.reclassifiedCategory_("KIX", "✈️ 旅遊出行"), "✈️ 旅遊出行");
+  assert.strictEqual(sandbox.reclassifiedCategory_("KIX", other), other);
+  assert.strictEqual(sandbox.reclassifiedCategory_("SEVEN-ELEVEN", other), "🍔 餐飲美食");
+  assert.strictEqual(sandbox.reclassifiedCategory_("CLIPPER SYSTEMS MOBILE #1", "📺 數位娛樂"), "⛽ 交通出行");
+});
 test("compiled rules are cached within one execution", function () {
   resetRuleCache();
   var a = sandbox.getCompiledRules_();
